@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.6
-// @description  Track Torn net worth, live cash, financial stat changes and local history on your own profile only.
+// @version      0.4.7
+// @description  Track Torn net worth, live cash, daily money in/out and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
@@ -11,308 +11,39 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(async () => {
-  "use strict";
-
-  const STORE = "networth_tracker_data_v2";
-  const KEY_STORE = "networth_tracker_api_key";
-  const PLAYER_ID_STORE = "networth_tracker_player_id";
-  const PLAYER_NAME_STORE = "networth_tracker_player_name";
-  const ROOT = "networth-tracker-root";
-  const PDA_KEY = "###PDA-APIKEY###";
-  const POLL = 5 * 60 * 1000;
-  const PAGE_CHECK = 700;
-  const KEEP = 90 * 24 * 60 * 60 * 1000;
-  const IN_STATS = ["bazaarprofit","itemmarketrevenue","totalbountyreward","receivedbountyvalue","stockprofits","stocknetprofits","investedprofit"];
-  const OUT_STATS = ["itemmarketfees","stockfees","rehabcost","totalbountyspent","peopleboughtspent"];
-  const ALL_STATS = [...new Set([...IN_STATS, ...OUT_STATS])];
-
-  let apiKey = PDA_KEY;
-  let playerId = null;
-  let playerName = null;
-  let timer = null;
-  let busy = false;
-  let open = false;
-
-  const defaults = {
-    current: null,
-    snapshots: [],
-    statsCurrent: {},
-    statsSnapshots: [],
-    apiStatus: "Not checked",
-    apiError: null,
-    lastChecked: null
-  };
-
-  const num = v => Number.isFinite(Number(v)) ? Number(v) : null;
-  const money = v => num(v) === null ? "—" : `$${Math.round(v).toLocaleString("en-GB")}`;
-  const signed = v => num(v) === null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-GB")}`;
-  const esc = v => String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
-  const dayStart = () => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); };
-  const effectiveKey = () => apiKey && apiKey !== PDA_KEY ? String(apiKey).trim() : "";
-
-  async function storageGet(k, fallback="") {
-    try { if (typeof PDA_storage !== "undefined") return await PDA_storage.get(k, fallback); } catch(e) {}
-    try { const v = localStorage.getItem(k); return v === null ? fallback : JSON.parse(v); } catch(e) { return fallback; }
-  }
-  async function storageSet(k,v) {
-    try { if (typeof PDA_storage !== "undefined") { await PDA_storage.set(k,v); return; } } catch(e) {}
-    try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) {}
-  }
-  async function getKey() {
-    try { if (typeof PDA_storage !== "undefined") { const v = String((await PDA_storage.get(KEY_STORE,"")) || "").trim(); if (v) return v; } } catch(e) {}
-    try { return String(localStorage.getItem(KEY_STORE) || "").trim(); } catch(e) { return ""; }
-  }
-  async function saveKey(k) {
-    try { if (typeof PDA_storage !== "undefined") await PDA_storage.set(KEY_STORE,k); } catch(e) {}
-    try { localStorage.setItem(KEY_STORE,k); } catch(e) {}
-  }
-  function normalise(x) {
-    const d = {...defaults, ...(x && typeof x === "object" ? x : {})};
-    d.snapshots = Array.isArray(d.snapshots) ? d.snapshots : [];
-    d.statsSnapshots = Array.isArray(d.statsSnapshots) ? d.statsSnapshots : [];
-    return d;
-  }
-  async function load() {
-    try { if (typeof PDA_storage !== "undefined") return normalise(await PDA_storage.get(STORE,defaults)); } catch(e) {}
-    try { const x = localStorage.getItem(STORE); if (x) return normalise(JSON.parse(x)); } catch(e) {}
-    return normalise(defaults);
-  }
-  async function save(d) {
-    try { if (typeof PDA_storage !== "undefined") { await PDA_storage.set(STORE,d); return; } } catch(e) {}
-    try { localStorage.setItem(STORE,JSON.stringify(d)); } catch(e) {}
-  }
-
-  async function request(url) {
-    try {
-      if (!effectiveKey()) return {error:{code:"LOCAL",error:"No API key"}};
-      const headers = {Accept:"application/json", Authorization:`ApiKey ${effectiveKey()}`};
-      const r = typeof PDA_httpGet === "function" ? PDA_httpGet(url,headers) : fetch(url,{headers});
-      const out = await Promise.race([r,new Promise((_,rej)=>setTimeout(()=>rej(new Error("Request timed out after 15 seconds")),15000))]);
-      const text = out?.responseText ?? out;
-      return typeof text === "string" ? JSON.parse(text) : await out.json();
-    } catch(e) {
-      return {error:{code:"LOCAL",error:e?.message || "Request failed"}};
-    }
-  }
-  const v2 = (path,params={}) => {
-    const u = new URL(`https://api.torn.com/v2/user/${path}`);
-    Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,v));
-    u.searchParams.set("key",effectiveKey());
-    return request(u.toString());
-  };
-
-  async function identifyPlayer() {
-    if (!effectiveKey()) return false;
-    if (playerId && playerName) return true;
-    const savedId = Number(await storageGet(PLAYER_ID_STORE,""));
-    const savedName = String(await storageGet(PLAYER_NAME_STORE,"") || "").trim();
-    if (savedId > 0) playerId = savedId;
-    if (savedName) playerName = savedName;
-    if (playerId && playerName) return true;
-    try {
-      const r = await v2("basic");
-      if (r?.error) throw new Error(`${r.error.code}: ${r.error.error}`);
-      const b = r?.basic || r;
-      const id = Number(b?.player_id ?? b?.id ?? r?.player_id ?? r?.userID);
-      const name = String(b?.name ?? r?.name ?? "").trim();
-      if (id > 0) { playerId = id; await storageSet(PLAYER_ID_STORE,id); }
-      if (name) { playerName = name; await storageSet(PLAYER_NAME_STORE,name); }
-      return !!playerId;
-    } catch(e) {
-      console.warn("[NetWorth Tracker] Could not identify player",e);
-      return false;
-    }
-  }
-
-  function profilePage() { return location.pathname.toLowerCase() === "/profiles.php"; }
-  function currentProfileId() {
-    if (!profilePage()) return null;
-    const p = new URLSearchParams(location.search);
-    const xid = Number(p.get("XID") || p.get("ID"));
-    return xid > 0 ? xid : null;
-  }
-
-  function isOwnProfile() {
-    if (!profilePage()) return false;
-    const p = new URLSearchParams(location.search);
-    const xid = currentProfileId();
-    if (xid) return playerId ? xid === Number(playerId) : false;
-    const nid = String(p.get("NID") || "").trim();
-    if (nid) return !!playerName && decodeURIComponent(nid).toLowerCase() === String(playerName).toLowerCase();
-    return !p.get("XID") && !p.get("ID") && !p.get("NID");
-  }
-
-  function removeRoot() { const r = document.getElementById(ROOT); if (r) r.remove(); }
-  function stopPolling() { if (timer) { clearInterval(timer); timer = null; } }
-
-  // Put NetWorth in the same lower profile-script area used by Loadout/FFScouter.
-  // On current PDA/Torn profiles the Medals section follows those collapsible script bars,
-  // so inserting immediately before the visible Medals heading keeps NetWorth in that group.
-  function findProfileInsertionPoint() {
-    const visible = el => {
-      if (!el || !el.isConnected) return false;
-      const cs = getComputedStyle(el);
-      return cs.display !== "none" && cs.visibility !== "hidden" && el.getBoundingClientRect().height > 0;
-    };
-    const exact = (text) => [...document.querySelectorAll("h1,h2,h3,h4,h5,div,span,strong")]
-      .find(el => visible(el) && el.textContent.trim() === text);
-
-    const medals = exact("Medals");
-    if (medals && medals.parentElement) return {parent:medals.parentElement, before:medals};
-
-    const basic = exact("Basic Information");
-    if (basic && basic.parentElement) return {parent:basic.parentElement, before:basic};
-
-    const ff = exact("FFScouter Settings");
-    if (ff && ff.parentElement) return {parent:ff.parentElement, after:ff};
-
-    const loadout = exact("Loadout Information");
-    if (loadout && loadout.parentElement) return {parent:loadout.parentElement, after:loadout};
-
-    const point = document.querySelector("#profileroot") ||
-      document.querySelector(".profile-container") ||
-      document.querySelector("#mainContainer .content-wrapper") ||
-      document.querySelector("#mainContainer") || null;
-    return point ? {parent:point, after:null} : null;
-  }
-
-  function ensure() {
-    let r = document.getElementById(ROOT);
-    if (r) return r;
-    const target = findProfileInsertionPoint();
-    if (!target?.parent) return null;
-    r = document.createElement("section");
-    r.id = ROOT;
-    if (target.before && target.before.parentElement === target.parent) target.parent.insertBefore(r,target.before);
-    else if (target.after && target.after.parentElement === target.parent) target.after.insertAdjacentElement("afterend",r);
-    else target.parent.prepend(r);
-    return r;
-  }
-
-  function styles() {
-    if (document.getElementById(ROOT+"-style")) return;
-    const s = document.createElement("style");
-    s.id = ROOT+"-style";
-    s.textContent = `
-      #${ROOT}{margin:8px 0;font-family:Arial,Helvetica,sans-serif;color:#ddd}
-      #${ROOT} .nwt-header{width:100%;box-sizing:border-box;border:0;border-radius:4px;padding:9px 11px;background:rgba(30,30,30,.92);color:#ddd;text-align:left;font-size:13px;font-weight:600;cursor:pointer}
-      #${ROOT} .nwt-arrow{float:right;opacity:.7}
-      #${ROOT} .nwt-panel{display:none;margin-top:2px;padding:12px;border-radius:0 0 4px 4px;background:rgba(24,24,24,.96);font-size:12px;line-height:1.45}
-      #${ROOT} .open{display:block} #${ROOT} .big{text-align:center;font-size:20px;font-weight:700;color:#fff} #${ROOT} .muted{opacity:.65;font-size:11px}
-      #${ROOT} .card{margin-top:10px;border-top:1px solid #333;padding-top:9px} #${ROOT} .row{display:flex;justify-content:space-between;gap:8px;padding:4px 0}
-      #${ROOT} .row+.row{border-top:1px solid #292929} #${ROOT} .pos{color:#72df91} #${ROOT} .neg{color:#ff7777}
-      #${ROOT} details{margin-top:10px;border-top:1px solid #333;padding-top:9px} #${ROOT} summary{cursor:pointer;color:#ddd;font-weight:600}
-      #${ROOT} input{width:100%;box-sizing:border-box;margin-top:7px;padding:7px;border:1px solid #444;border-radius:3px;background:#181818;color:#fff}
-      #${ROOT} .buttons{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px} #${ROOT} .btn{border:1px solid #444;border-radius:3px;padding:7px;background:#2a2a2a;color:#ddd}
-    `;
-    document.head.appendChild(s);
-  }
-
-  async function personalStats() {
-    const out = {};
-    for (let i=0;i<ALL_STATS.length;i+=10) {
-      const r = await v2("personalstats",{stat:ALL_STATS.slice(i,i+10).join(",")});
-      if (r?.error) throw new Error(`${r.error.code}: ${r.error.error}`);
-      Object.assign(out,r.personalstats || {});
-    }
-    return out;
-  }
-  function components(nw) {
-    const out = {};
-    const add = (label,v) => { const n=num(v); if (n!==null) out[label]=n; };
-    add("Wallet",nw?.money?.wallet ?? nw?.wallet);
-    add("Cayman",nw?.money?.cayman ?? nw?.cayman);
-    add("Vault",nw?.money?.vault ?? nw?.vault);
-    add("Piggy bank",nw?.money?.piggy_bank ?? nw?.piggybank);
-    add("Points",nw?.points);
-    add("Items",nw?.items?.inventory ?? nw?.items);
-    add("Display case",nw?.items?.display_case ?? nw?.displaycase);
-    add("Bazaar",nw?.items?.bazaar ?? nw?.bazaar);
-    add("Item market",nw?.items?.item_market ?? nw?.itemmarket);
-    add("Trades",nw?.items?.trades ?? nw?.trade);
-    add("Properties",nw?.assets?.property ?? nw?.properties);
-    add("Stocks",nw?.stockmarket ?? nw?.stocks);
-    add("Auction house",nw?.items?.auction_house ?? nw?.auctionhouse);
-    add("Company",nw?.assets?.company ?? nw?.company);
-    add("Bookie",nw?.money?.bookie ?? nw?.bookie);
-    add("Loan",nw?.money?.loans ?? nw?.loan);
-    add("Unpaid fees",nw?.money?.unpaid_fees ?? nw?.unpaidfees);
-    return out;
-  }
-  function totalNW(nw) {
-    for (const v of [nw?.total,nw?.networth]) { const n=num(v); if (n!==null) return n; }
-    return null;
-  }
-
-  function deltaStats(d) {
-    const base=d.statsSnapshots.find(x=>x.timestamp>=dayStart()), cur=d.statsCurrent||{}, delta={};
-    if (base) for (const k of ALL_STATS) { const a=num(cur[k]),b=num(base.stats?.[k]); if(a!==null&&b!==null) delta[k]=a-b; }
-    return delta;
-  }
-  function sumStats(d,names) { const x=deltaStats(d); return names.reduce((s,k)=>s+(num(x[k])||0),0); }
-
-  async function refresh() {
-    if (busy || !effectiveKey() || !isOwnProfile()) return;
-    busy=true;
-    try {
-      const [moneyR,nwR,stats]=await Promise.all([v2("money"),v2("networth"),personalStats()]);
-      if(moneyR?.error) throw new Error(`${moneyR.error.code}: ${moneyR.error.error}`);
-      if(nwR?.error) throw new Error(`${nwR.error.code}: ${nwR.error.error}`);
-      const d=await load(), m=moneyR.money||{}, nw=nwR.networth||{};
-      const snap={timestamp:Date.now(),cash:num(m.wallet),networth:totalNW(nw),components:components(nw)};
-      d.current=snap; d.snapshots.push(snap); d.statsCurrent=stats; d.statsSnapshots.push({timestamp:Date.now(),stats});
-      const cutoff=Date.now()-KEEP;
-      d.snapshots=d.snapshots.filter(x=>x.timestamp>=cutoff);
-      d.statsSnapshots=d.statsSnapshots.filter(x=>x.timestamp>=cutoff);
-      d.apiStatus="Connected"; d.apiError=null; d.lastChecked=Date.now(); await save(d); render(d);
-    } catch(e) {
-      const d=await load(); d.apiStatus="Error"; d.apiError={code:"API",error:e?.message||"Unknown error"}; d.lastChecked=Date.now(); await save(d); render(d);
-    } finally { busy=false; }
-  }
-
-  function render(d) {
-    if (!isOwnProfile()) { removeRoot(); return; }
-    const r=ensure(); if(!r) return;
-    const c=d.current||{}, base=d.snapshots.find(x=>x.timestamp>=dayStart());
-    const nwToday=num(c.networth)!=null&&num(base?.networth)!=null?c.networth-base.networth:null;
-    const cashToday=num(c.cash)!=null&&num(base?.cash)!=null?c.cash-base.cash:null;
-    const knownIn=sumStats(d,IN_STATS), knownOut=sumStats(d,OUT_STATS), knownNet=knownIn-knownOut;
-    const colour=v=>v>0?"pos":v<0?"neg":"";
-    const comp=Object.entries(c.components||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><strong>${money(v)}</strong></div>`).join("")||`<div class="muted">No component data returned.</div>`;
-    const delta=deltaStats(d);
-    const tracked=[...new Set([...IN_STATS,...OUT_STATS])].map(k=>{const v=delta[k];return num(v)!==null?`<div class="row"><span>${esc(k)}</span><strong class="${colour(v)}">${signed(v)}</strong></div>`:""}).join("");
-    r.innerHTML=`<button class="nwt-header" id="nwt-toggle"><span>💰 NetWorth Tracker</span><span class="nwt-arrow">${open?"▴":"▾"}</span></button>
-      <div class="nwt-panel ${open?"open":""}">
-        <div class="big">${money(c.networth)}</div>
-        <div style="text-align:center">Today: <strong class="${colour(nwToday)}">${signed(nwToday)}</strong></div>
-        <div class="muted" style="text-align:center">Updated: ${d.lastChecked?new Date(d.lastChecked).toLocaleTimeString("en-GB"):"Never"}</div>
-        <div class="card"><div class="row"><span>💵 Cash</span><strong>${money(c.cash)}</strong></div><div class="row"><span>Cash today</span><strong class="${colour(cashToday)}">${signed(cashToday)}</strong></div></div>
-        <div class="card"><strong>💸 Known financial activity today</strong><div class="row"><span>Tracked income</span><strong class="pos">${signed(knownIn)}</strong></div><div class="row"><span>Tracked costs</span><strong class="neg">${signed(-knownOut)}</strong></div><div class="row"><span>Tracked net</span><strong class="${colour(knownNet)}">${signed(knownNet)}</strong></div><div class="muted">These are categories Torn exposes as cumulative stats, not a complete transaction ledger.</div></div>
-        <details><summary>📊 Today's tracked sources</summary><div style="margin-top:7px">${tracked||`<div class="muted">No change recorded yet.</div>`}</div></details>
-        <details><summary>📈 Net-worth components</summary><div style="margin-top:7px">${comp}</div></details>
-        <details><summary>⚙️ API / setup</summary><div>Status: <strong>${esc(d.apiStatus)}</strong>${d.apiError?`<div class="neg">${esc(d.apiError.code)}: ${esc(d.apiError.error)}</div>`:""}<input id="nwt-key" type="password" placeholder="Torn API key"><div class="buttons"><button class="btn" id="nwt-save">Save & test</button><button class="btn" id="nwt-refresh">Refresh</button></div></details>
-      </div>`;
-    r.querySelector("#nwt-toggle").onclick=()=>{open=!open;render(d);};
-    r.querySelector("#nwt-refresh").onclick=()=>refresh();
-    r.querySelector("#nwt-save").onclick=async()=>{const k=r.querySelector("#nwt-key").value.trim();if(k){apiKey=k;await saveKey(k);playerId=null;playerName=null;await identifyPlayer();await checkPage();}};
-  }
-
-  async function checkPage() {
-    if(!profilePage() || !effectiveKey()) { stopPolling(); removeRoot(); return; }
-    const p=new URLSearchParams(location.search);
-    const needsIdentity=!!(p.get("XID")||p.get("ID")||p.get("NID"));
-    if(needsIdentity) await identifyPlayer();
-    if(!isOwnProfile()) { stopPolling(); removeRoot(); return; }
-    render(await load());
-    if(!timer) { await refresh(); timer=setInterval(refresh,POLL); }
-  }
-
-  async function init() {
-    apiKey=await getKey();
-    styles();
-    await checkPage();
-    setInterval(checkPage,PAGE_CHECK);
-  }
-  init().catch(e=>console.error("[NetWorth Tracker]",e));
+(async()=>{
+"use strict";
+const ROOT="networth-tracker-root",STYLE=ROOT+"-style",STORE="networth_tracker_data_v2",KEY_STORE="networth_tracker_api_key",ID_STORE="networth_tracker_player_id",NAME_STORE="networth_tracker_player_name",PDA_KEY="###PDA-APIKEY###",KEEP=90*86400000;
+const IN_STATS=["bazaarprofit","itemmarketrevenue","totalbountyreward","receivedbountyvalue","stockprofits","stocknetprofits","investedprofit"],OUT_STATS=["itemmarketfees","stockfees","rehabcost","totalbountyspent","peopleboughtspent"],ALL_STATS=[...new Set([...IN_STATS,...OUT_STATS])];
+let key="",pid=null,pname=null,busy=false;
+const num=v=>Number.isFinite(Number(v))?Number(v):null;
+const money=v=>num(v)===null?"—":`$${Math.round(v).toLocaleString("en-GB")}`;
+const signed=v=>num(v)===null?"—":`${v>0?"+":v<0?"−":""}$${Math.abs(Math.round(v)).toLocaleString("en-GB")}`;
+const esc=v=>String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+const today=()=>{const d=new Date();d.setHours(0,0,0,0);return d.getTime()};
+async function get(k,f=""){try{if(typeof PDA_storage!=="undefined")return await PDA_storage.get(k,f)}catch(e){}try{const x=localStorage.getItem(k);return x===null?f:JSON.parse(x)}catch(e){return f}}
+async function set(k,v){try{if(typeof PDA_storage!=="undefined"){await PDA_storage.set(k,v);return}}catch(e){}try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+async function data(){const d=await get(STORE,{});return{current:null,snapshots:[],statsCurrent:{},statsSnapshots:[],apiStatus:"Not checked",apiError:null,lastChecked:null,...(d&&typeof d==="object"?d:{})}}
+async function save(d){d.snapshots=(d.snapshots||[]).filter(x=>Date.now()-x.timestamp<=KEEP);d.statsSnapshots=(d.statsSnapshots||[]).filter(x=>Date.now()-x.timestamp<=KEEP);await set(STORE,d)}
+async function init(){key=PDA_KEY;if(key===PDA_KEY)key=String(await get(KEY_STORE,"")||"").trim();if(!key&&typeof PDA_storage!=="undefined")try{key=String((await PDA_storage.get("torn_api_key",""))||"").trim()}catch(e){}}
+async function req(url){try{if(!key)return{error:{code:"LOCAL",error:"No API key"}};const h={Accept:"application/json",Authorization:`ApiKey ${key}`},r=typeof PDA_httpGet==="function"?PDA_httpGet(url,h):fetch(url,{headers:h}),o=await Promise.race([r,new Promise((_,j)=>setTimeout(()=>j(new Error("Request timed out")),15000))]),t=o?.responseText??o;return typeof t==="string"?JSON.parse(t):await o.json()}catch(e){return{error:{code:"LOCAL",error:e?.message||"Request failed"}}}}
+function api(path,params={}){const u=new URL(`https://api.torn.com/v2/user/${path}`);Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,v));u.searchParams.set("key",key);return req(u.toString())}
+async function identify(){if(!key)return false;pid=Number(await get(ID_STORE,""))||null;pname=String(await get(NAME_STORE,"")||"").trim()||null;if(pid&&pname)return true;const r=await api("basic");if(r?.error)return false;const b=r.basic||r,id=Number(b.player_id??b.id??r.player_id??r.userID),n=String(b.name??r.name??"").trim();if(id>0){pid=id;await set(ID_STORE,id)}if(n){pname=n;await set(NAME_STORE,n)}return!!pid}
+function own(){if(location.pathname.toLowerCase()!=="/profiles.php")return false;const p=new URLSearchParams(location.search),x=Number(p.get("XID")||p.get("ID"));if(x>0)return!!pid&&x===pid;const n=String(p.get("NID")||"").trim();if(n)return!!pname&&decodeURIComponent(n).toLowerCase()===pname.toLowerCase();return!p.has("XID")&&!p.has("ID")&&!p.has("NID")}
+function exact(t){return[...document.querySelectorAll("h1,h2,h3,h4,h5,h6,div,span,strong,p")].find(e=>e.isConnected&&e.textContent.trim()===t&&getComputedStyle(e).display!=="none")||null}
+function insertion(){
+ const medals=exact("Medals"),basic=exact("Basic Information");
+ if(medals&&basic){let m=[],n=medals;while(n){m.push(n);n=n.parentElement}const b=new Set();n=basic;while(n){b.add(n);n=n.parentElement}let lca=null;for(const x of m){if(b.has(x)){lca=x;break}}if(lca){let path=[],q=medals;while(q&&q!==lca){path.push(q);q=q.parentElement}path.push(lca);const child=path[path.length-2];if(child?.parentElement===lca)return{parent:lca,before:child}}}
+ for(const t of ["FFScouter Settings","Loadout Information"]){const e=exact(t);if(!e)continue;let n=e;for(let i=0;i<7&&n.parentElement;i++,n=n.parentElement){const p=n.parentElement;if(p.children.length>=2)return{parent:p,after:n}}}return null;
+}
+function style(){if(document.getElementById(STYLE))return;const s=document.createElement("style");s.id=STYLE;s.textContent=`#${ROOT}{margin:8px 0;font-family:Arial,Helvetica,sans-serif;color:#ddd}#${ROOT} .head{display:block;width:100%;box-sizing:border-box;border:0;border-radius:4px;padding:10px 12px;background:linear-gradient(#3a3a3a,#292929);color:#eee;text-align:left;font-size:14px;font-weight:700;cursor:pointer}#${ROOT} .arrow{float:right;opacity:.7}#${ROOT} .panel{display:none;margin-top:2px;padding:12px;border-radius:0 0 4px 4px;background:#202020;font-size:12px;line-height:1.45}#${ROOT}.open .panel{display:block}#${ROOT} .big{text-align:center;font-size:21px;font-weight:700;color:#fff}#${ROOT} .muted{opacity:.65;font-size:11px}#${ROOT} .card{margin-top:10px;border-top:1px solid #3a3a3a;padding-top:9px}#${ROOT} .row{display:flex;justify-content:space-between;gap:8px;padding:4px 0}#${ROOT} .row+.row{border-top:1px solid #2d2d2d}#${ROOT} .pos{color:#72df91}#${ROOT} .neg{color:#ff7777}#${ROOT} details{margin-top:10px;border-top:1px solid #3a3a3a;padding-top:9px}#${ROOT} summary{cursor:pointer;font-weight:600}`;document.head.appendChild(s)}
+function root(){let r=document.getElementById(ROOT);if(r)return r;const t=insertion();if(!t)return null;r=document.createElement("section");r.id=ROOT;if(t.before)t.parent.insertBefore(r,t.before);else if(t.after)t.after.insertAdjacentElement("afterend",r);else t.parent.prepend(r);return r}
+function statsDelta(d){const base=(d.statsSnapshots||[]).find(x=>x.timestamp>=today()),cur=d.statsCurrent||{},o={};if(base)for(const k of ALL_STATS){const a=num(cur[k]),b=num(base.stats?.[k]);if(a!==null&&b!==null)o[k]=a-b}return o}
+function sum(d,a){const x=statsDelta(d);return a.reduce((s,k)=>s+(num(x[k])||0),0)}
+function components(n){const o={};const add=(k,v)=>{const x=num(v);if(x!==null)o[k]=x};add("Wallet",n?.money?.wallet??n?.wallet);add("Cayman",n?.money?.cayman??n?.cayman);add("Vault",n?.money?.vault??n?.vault);add("Points",n?.points);add("Items",n?.items?.inventory??n?.items);add("Bazaar",n?.items?.bazaar??n?.bazaar);add("Item market",n?.items?.item_market??n?.itemmarket);add("Properties",n?.assets?.property??n?.properties);add("Stocks",n?.stockmarket??n?.stocks);add("Company",n?.assets?.company??n?.company);return o}
+function total(n){for(const v of[n?.total,n?.networth]){const x=num(v);if(x!==null)return x}return null}
+function render(d){const r=document.getElementById(ROOT);if(!r)return;const c=d.current||{},old=(d.snapshots||[]).filter(x=>x.timestamp<today()).slice(-1)[0],nw=old&&num(c.networth)!==null?c.networth-old.networth:null,inc=sum(d,IN_STATS),out=sum(d,OUT_STATS),flow=inc-out,rows=Object.entries(c.components||{}).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><b>${money(v)}</b></div>`).join("");r.innerHTML=`<button class="head" type="button">💰 NetWorth Tracker <span class="arrow">${r.classList.contains("open")?"▾":"▸"}</span></button><div class="panel"><div class="big">${money(c.networth)}</div><div class="muted" style="text-align:center">Current net worth · checked ${c.timestamp?new Date(c.timestamp).toLocaleTimeString("en-GB"):"never"}</div><div class="card"><div class="row"><span>Live cash</span><b>${money(c.cash)}</b></div><div class="row"><span>Today's NW change</span><b class="${nw>0?"pos":nw<0?"neg":""}">${signed(nw)}</b></div><div class="row"><span>Today's money in</span><b class="pos">${signed(inc)}</b></div><div class="row"><span>Today's money out</span><b class="neg">${signed(-out)}</b></div><div class="row"><span>Net tracked flow</span><b class="${flow>0?"pos":flow<0?"neg":""}">${signed(flow)}</b></div></div><details><summary>📊 Net-worth components</summary>${rows||'<div class="muted">No component data returned yet.</div>'}</details><details><summary>⚙️ API / setup</summary><div class="muted">Status: ${esc(d.apiStatus)} · Last check: ${d.lastChecked?new Date(d.lastChecked).toLocaleString("en-GB"):"never"}</div>${d.apiError?`<div class="neg">${esc(d.apiError)}</div>`:""}</details></div>`;r.querySelector(".head").onclick=()=>{r.classList.toggle("open");r.querySelector(".arrow").textContent=r.classList.contains("open")?"▾":"▸"}}
+async function refresh(){if(busy||!key||!own())return;busy=true;try{const[m,n,p]=await Promise.all([api("money"),api("networth"),api("personalstats",{stat:ALL_STATS.join(",")})]);if(m?.error)throw Error(`${m.error.code}: ${m.error.error}`);if(n?.error)throw Error(`${n.error.code}: ${n.error.error}`);if(p?.error)throw Error(`${p.error.code}: ${p.error.error}`);const d=await data(),mm=m.money||{},nn=n.networth||{},snap={timestamp:Date.now(),cash:num(mm.wallet),networth:total(nn),components:components(nn)};d.current=snap;d.snapshots.push(snap);d.statsCurrent=p.personalstats||{};d.statsSnapshots.push({timestamp:Date.now(),stats:d.statsCurrent});d.apiStatus="OK";d.apiError=null;d.lastChecked=Date.now();await save(d);render(d)}catch(e){const d=await data();d.apiStatus="Error";d.apiError=e?.message||"Request failed";d.lastChecked=Date.now();await save(d);render(d)}finally{busy=false}}
+async function page(){if(location.pathname.toLowerCase()!=="/profiles.php"){document.getElementById(ROOT)?.remove();return}await identify();if(!own()){document.getElementById(ROOT)?.remove();return}style();let tries=0;const go=async()=>{if(!own())return;const r=root();if(r){render(await data());refresh();return}if(++tries<30)setTimeout(go,500)};go()}
+await init();page();setInterval(page,10000);
 })();
