@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.5.2
+// @version      0.5.3
 // @description  Live Torn cash, cached net worth, observed daily cash movement and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
