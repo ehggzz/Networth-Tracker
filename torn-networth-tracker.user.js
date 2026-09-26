@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.5
+// @version      0.4.6
 // @description  Track Torn net worth, live cash, financial stat changes and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
@@ -133,8 +133,6 @@
     return xid > 0 ? xid : null;
   }
 
-  // Torn opens your own profile as plain profiles.php with no XID/NID.
-  // That is a valid own-profile page and must not wait for /basic to identify us.
   function isOwnProfile() {
     if (!profilePage()) return false;
     const p = new URLSearchParams(location.search);
@@ -148,10 +146,30 @@
   function removeRoot() { const r = document.getElementById(ROOT); if (r) r.remove(); }
   function stopPolling() { if (timer) { clearInterval(timer); timer = null; } }
 
-  // Use the exact same profile area as OD Tracker when it exists.
+  // Put NetWorth in the same lower profile-script area used by Loadout/FFScouter.
+  // On current PDA/Torn profiles the Medals section follows those collapsible script bars,
+  // so inserting immediately before the visible Medals heading keeps NetWorth in that group.
   function findProfileInsertionPoint() {
-    const odRoot = document.getElementById("od-tracker-root");
-    if (odRoot && odRoot.parentElement) return {parent:odRoot.parentElement, after:odRoot};
+    const visible = el => {
+      if (!el || !el.isConnected) return false;
+      const cs = getComputedStyle(el);
+      return cs.display !== "none" && cs.visibility !== "hidden" && el.getBoundingClientRect().height > 0;
+    };
+    const exact = (text) => [...document.querySelectorAll("h1,h2,h3,h4,h5,div,span,strong")]
+      .find(el => visible(el) && el.textContent.trim() === text);
+
+    const medals = exact("Medals");
+    if (medals && medals.parentElement) return {parent:medals.parentElement, before:medals};
+
+    const basic = exact("Basic Information");
+    if (basic && basic.parentElement) return {parent:basic.parentElement, before:basic};
+
+    const ff = exact("FFScouter Settings");
+    if (ff && ff.parentElement) return {parent:ff.parentElement, after:ff};
+
+    const loadout = exact("Loadout Information");
+    if (loadout && loadout.parentElement) return {parent:loadout.parentElement, after:loadout};
+
     const point = document.querySelector("#profileroot") ||
       document.querySelector(".profile-container") ||
       document.querySelector("#mainContainer .content-wrapper") ||
@@ -166,7 +184,8 @@
     if (!target?.parent) return null;
     r = document.createElement("section");
     r.id = ROOT;
-    if (target.after && target.after.parentElement === target.parent) target.after.insertAdjacentElement("afterend",r);
+    if (target.before && target.before.parentElement === target.parent) target.parent.insertBefore(r,target.before);
+    else if (target.after && target.after.parentElement === target.parent) target.after.insertAdjacentElement("afterend",r);
     else target.parent.prepend(r);
     return r;
   }
@@ -281,13 +300,9 @@
 
   async function checkPage() {
     if(!profilePage() || !effectiveKey()) { stopPolling(); removeRoot(); return; }
-
-    // On plain profiles.php, the page itself is Torn's own-profile view.
-    // Do not block the UI waiting for /basic to identify the player.
     const p=new URLSearchParams(location.search);
     const needsIdentity=!!(p.get("XID")||p.get("ID")||p.get("NID"));
     if(needsIdentity) await identifyPlayer();
-
     if(!isOwnProfile()) { stopPolling(); removeRoot(); return; }
     render(await load());
     if(!timer) { await refresh(); timer=setInterval(refresh,POLL); }
