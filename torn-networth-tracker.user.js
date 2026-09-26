@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.3
+// @version      0.4.4
 // @description  Track Torn net worth, live cash, financial stat changes and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
@@ -116,7 +116,6 @@
     if(xid) return xid===Number(playerId);
     const nid=String(p.get("NID")||"").trim();
     if(nid) return !!playerName && decodeURIComponent(nid).toLowerCase()===String(playerName).toLowerCase();
-    // Torn's plain /profiles.php route resolves to the logged-in user's own profile.
     return !p.get("XID") && !p.get("ID") && !p.get("NID");
   }
 
@@ -124,19 +123,23 @@
   function stopPolling(){if(timer){clearInterval(timer);timer=null;}}
 
   function findProfileInsertionPoint(){
-    return document.querySelector("#profileroot") ||
+    const odRoot=document.getElementById("od-tracker-root");
+    if(odRoot && odRoot.parentElement) return {parent:odRoot.parentElement, after:odRoot};
+    const point=document.querySelector("#profileroot") ||
       document.querySelector(".profile-container") ||
       document.querySelector("#mainContainer .content-wrapper") ||
       document.querySelector("#mainContainer") ||
       document.body;
+    return {parent:point, after:null};
   }
 
   function ensure(){
     let r=document.getElementById(ROOT);if(r)return r;
-    const point=findProfileInsertionPoint();
-    if(!point)return null;
+    const target=findProfileInsertionPoint();
+    if(!target?.parent)return null;
     r=document.createElement("section");r.id=ROOT;
-    point.prepend(r);
+    if(target.after && target.after.parentElement===target.parent) target.after.insertAdjacentElement("afterend",r);
+    else target.parent.prepend(r);
     return r;
   }
 
