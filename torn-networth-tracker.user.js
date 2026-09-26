@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.0
-// @description  Track Torn net worth, live cash, financial stat changes and local history.
+// @version      0.4.1
+// @description  Track Torn net worth, live cash, financial stat changes and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
@@ -15,8 +15,8 @@
   "use strict";
 
   const STORE = "networth_tracker_data_v2";
-  const OLD_STORE = "networth_tracker_data_v1";
   const KEY_STORE = "networth_tracker_api_key";
+  const PLAYER_ID_STORE = "networth_tracker_player_id";
   const ROOT = "networth-tracker-root";
   const PDA_KEY = "###PDA-APIKEY###";
   const POLL = 5 * 60 * 1000;
@@ -27,23 +27,17 @@
 
   let apiKey = PDA_KEY;
   let timer = null;
+  let pageTimer = null;
   let busy = false;
   let open = false;
+  let playerId = null;
+  let mounted = false;
 
   const defaults = { current:null, snapshots:[], statsCurrent:{}, statsSnapshots:[], apiStatus:"Not checked", apiError:null, lastChecked:null };
 
   const num = v => Number.isFinite(Number(v)) ? Number(v) : null;
   const money = v => num(v) === null ? "—" : `$${Math.round(v).toLocaleString("en-GB")}`;
   const signed = v => num(v) === null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(Math.round(v)).toLocaleString("en-GB")}`;
-  const short = v => {
-    if (num(v) === null) return "—";
-    const a=Math.abs(v), s=v<0?"−":"";
-    if(a>=1e12)return `${s}$${(a/1e12).toFixed(2)}t`;
-    if(a>=1e9)return `${s}$${(a/1e9).toFixed(2)}b`;
-    if(a>=1e6)return `${s}$${(a/1e6).toFixed(2)}m`;
-    if(a>=1e3)return `${s}$${(a/1e3).toFixed(2)}k`;
-    return signed(v);
-  };
   const esc = v => String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
   const dayStart = () => { const d=new Date(); d.setHours(0,0,0,0); return d.getTime(); };
 
@@ -56,6 +50,16 @@
   async function saveKey(k){
     try{if(typeof PDA_storage!=="undefined")await PDA_storage.set(KEY_STORE,k);}catch(e){}
     try{localStorage.setItem(KEY_STORE,k);}catch(e){}
+  }
+  async function getStoredPlayerId(){
+    try { if(typeof PDA_storage!=="undefined"){const v=Number(await PDA_storage.get(PLAYER_ID_STORE,""));if(v>0)return v;} } catch(e){}
+    try { const v=Number(localStorage.getItem(PLAYER_ID_STORE)); return v>0?v:null; } catch(e){ return null; }
+  }
+  async function savePlayerId(id){
+    playerId=Number(id)||null;
+    if(!playerId)return;
+    try{if(typeof PDA_storage!=="undefined")await PDA_storage.set(PLAYER_ID_STORE,playerId);}catch(e){}
+    try{localStorage.setItem(PLAYER_ID_STORE,String(playerId));}catch(e){}
   }
   async function load(){
     try{if(typeof PDA_storage!=="undefined")return normalise(await PDA_storage.get(STORE,defaults));}catch(e){}
@@ -89,6 +93,62 @@
     u.searchParams.set("key",key());
     return request(u.toString());
   };
+
+  async function identifyPlayer(){
+    if(!key())return false;
+    if(playerId)return true;
+    const stored=await getStoredPlayerId();
+    if(stored){playerId=stored;return true;}
+    try{
+      const r=await v2("basic");
+      if(r?.error)throw new Error(`${r.error.code}: ${r.error.error}`);
+      const id=Number(r?.basic?.player_id ?? r?.player_id ?? r?.basic?.userID ?? r?.userID);
+      if(id>0){await savePlayerId(id);return true;}
+    }catch(e){console.warn("[NetWorth Tracker] Could not identify player",e);}
+    return false;
+  }
+
+  function ownProfileIdFromUrl(){
+    if(location.pathname.toLowerCase()!=="/profiles.php")return null;
+    const p=new URLSearchParams(location.search);
+    const xid=Number(p.get("XID"));
+    return xid>0?xid:null;
+  }
+
+  function isOwnProfile(){
+    const xid=ownProfileIdFromUrl();
+    return !!(xid && playerId && xid===Number(playerId));
+  }
+
+  function removeRoot(){
+    const r=document.getElementById(ROOT);
+    if(r)r.remove();
+    mounted=false;
+  }
+
+  function stopPolling(){
+    if(timer){clearInterval(timer);timer=null;}
+  }
+
+  async function checkPage(){
+    if(!key()){
+      stopPolling();
+      removeRoot();
+      return;
+    }
+    await identifyPlayer();
+    if(!isOwnProfile()){
+      stopPolling();
+      removeRoot();
+      return;
+    }
+    const d=await load();
+    render(d);
+    if(!timer){
+      await refresh();
+      timer=setInterval(refresh,POLL);
+    }
+  }
 
   async function personalStats(){
     const out={};
@@ -129,7 +189,7 @@
   }
 
   async function refresh(){
-    if(busy||!key())return;
+    if(busy||!key()||!isOwnProfile())return;
     busy=true;
     try{
       const [moneyR,nwR,stats]=await Promise.all([v2("money"),v2("networth"),personalStats()]);
@@ -181,17 +241,20 @@
     let r=document.getElementById(ROOT);if(r)return r;
     r=document.createElement("section");r.id=ROOT;
     const point=document.querySelector("#profileroot,.profile-container,#mainContainer .content-wrapper,#mainContainer")||document.body;
-    point.appendChild(r);return r;
+    point.appendChild(r);mounted=true;return r;
   }
+
   function render(d){
-    const r=ensure(),c=d.current||{},prev=d.snapshots.length>1?d.snapshots[d.snapshots.length-2]:null;
+    if(!isOwnProfile())return removeRoot();
+    const r=ensure(),c=d.current||{};
     const base=d.snapshots.find(x=>x.timestamp>=dayStart());
     const nwToday=num(c.networth)!=null&&num(base?.networth)!=null?c.networth-base.networth:null;
     const cashToday=num(c.cash)!=null&&num(base?.cash)!=null?c.cash-base.cash:null;
     const knownIn=sumStats(d,IN_STATS),knownOut=sumStats(d,OUT_STATS),knownNet=knownIn-knownOut;
     const colour=v=>v>0?"pos":v<0?"neg":"";
     const comp=Object.entries(c.components||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><strong>${money(v)}</strong></div>`).join("")||`<div class="muted">No component data returned.</div>`;
-    const tracked=[...new Set([...IN_STATS,...OUT_STATS])].map(k=>{const v=deltaStats(d)[k];return num(v)!==null?`<div class="row"><span>${esc(k)}</span><strong class="${colour(v)}">${signed(v)}</strong></div>`:""}).join("");
+    const delta=deltaStats(d);
+    const tracked=[...new Set([...IN_STATS,...OUT_STATS])].map(k=>{const v=delta[k];return num(v)!==null?`<div class="row"><span>${esc(k)}</span><strong class="${colour(v)}">${signed(v)}</strong></div>`:""}).join("");
     r.innerHTML=`<button class="nwt-header" id="nwt-toggle"><span>💰 NetWorth Tracker</span><span class="nwt-arrow">${open?"▴":"▾"}</span></button>
       <div class="nwt-panel ${open?"open":""}">
         <div class="big">${money(c.networth)}</div><div style="text-align:center">Today: <strong class="${colour(nwToday)}">${signed(nwToday)}</strong></div><div class="muted" style="text-align:center">Updated: ${d.lastChecked?new Date(d.lastChecked).toLocaleTimeString("en-GB"):"Never"}</div>
@@ -203,10 +266,17 @@
       </div>`;
     r.querySelector("#nwt-toggle").onclick=()=>{open=!open;render(d)};
     r.querySelector("#nwt-refresh").onclick=()=>refresh();
-    r.querySelector("#nwt-save").onclick=async()=>{const k=r.querySelector("#nwt-key").value.trim();if(k){apiKey=k;await saveKey(k);await refresh();}};
+    r.querySelector("#nwt-save").onclick=async()=>{const k=r.querySelector("#nwt-key").value.trim();if(k){apiKey=k;await saveKey(k);playerId=null;await identifyPlayer();await checkPage();}};
   }
 
   async function init(){
-    apiKey=await getKey();styles();const d=await load();render(d);if(key())await refresh();if(timer)clearInterval(timer);timer=setInterval(refresh,POLL);}
+    apiKey=await getKey();
+    playerId=await getStoredPlayerId();
+    styles();
+    await checkPage();
+    if(pageTimer)clearInterval(pageTimer);
+    pageTimer=setInterval(checkPage,1000);
+  }
+
   init().catch(e=>console.error("[NetWorth Tracker]",e));
 })();
