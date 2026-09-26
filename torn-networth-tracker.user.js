@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.1
+// @version      0.4.2
 // @description  Track Torn net worth, live cash, financial stat changes and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
@@ -31,7 +31,6 @@
   let busy = false;
   let open = false;
   let playerId = null;
-  let mounted = false;
 
   const defaults = { current:null, snapshots:[], statsCurrent:{}, statsSnapshots:[], apiStatus:"Not checked", apiError:null, lastChecked:null };
 
@@ -123,7 +122,6 @@
   function removeRoot(){
     const r=document.getElementById(ROOT);
     if(r)r.remove();
-    mounted=false;
   }
 
   function stopPolling(){
@@ -237,16 +235,34 @@
     `;document.head.appendChild(s);
   }
 
+  function findProfileInsertionPoint(){
+    const selectors=[
+      "#profileroot > .content-wrapper",
+      "#profileroot",
+      ".profile-container",
+      "#mainContainer .content-wrapper"
+    ];
+    for(const selector of selectors){
+      const el=document.querySelector(selector);
+      if(el)return el;
+    }
+    return null;
+  }
+
   function ensure(){
     let r=document.getElementById(ROOT);if(r)return r;
+    const point=findProfileInsertionPoint();
+    if(!point)return null;
     r=document.createElement("section");r.id=ROOT;
-    const point=document.querySelector("#profileroot,.profile-container,#mainContainer .content-wrapper,#mainContainer")||document.body;
-    point.appendChild(r);mounted=true;return r;
+    point.prepend(r);
+    return r;
   }
 
   function render(d){
     if(!isOwnProfile())return removeRoot();
-    const r=ensure(),c=d.current||{};
+    const r=ensure();
+    if(!r)return;
+    const c=d.current||{};
     const base=d.snapshots.find(x=>x.timestamp>=dayStart());
     const nwToday=num(c.networth)!=null&&num(base?.networth)!=null?c.networth-base.networth:null;
     const cashToday=num(c.cash)!=null&&num(base?.cash)!=null?c.cash-base.cash:null;
