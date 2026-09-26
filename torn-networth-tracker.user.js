@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.8
-// @description  Torn NetWorth Tracker diagnostic build
+// @version      0.5.0
+// @description  Live Torn net worth, daily movement and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
@@ -12,15 +12,171 @@
 // ==/UserScript==
 
 (()=>{
-"use strict";
-const ID="networth-tracker-diagnostic";
-if(document.getElementById(ID)||location.pathname.toLowerCase()!=="/profiles.php")return;
-const s=document.createElement("style");
-s.textContent=`#${ID}{margin:8px 0;padding:10px 12px;background:linear-gradient(#3a3a3a,#292929);border-radius:4px;color:#fff;font:700 14px Arial,Helvetica,sans-serif;box-sizing:border-box;width:100%;position:relative;z-index:9999}`;
-document.head.appendChild(s);
-const bar=document.createElement("div");
-bar.id=ID;
-bar.textContent="💰 NetWorth Tracker — DIAGNOSTIC RUNNING";
-const target=document.querySelector("#profileroot")||document.querySelector(".profile-wrap")||document.querySelector(".profile-wrap-inner")||document.querySelector(".content-wrapper")||document.body;
-target.prepend(bar);
+  "use strict";
+
+  const ROOT="networth-tracker-root";
+  const KEY="###PDA-APIKEY###";
+  const API_KEY_STORE="networth_tracker_api_key";
+  const HISTORY_STORE="networth_tracker_history_v3";
+  const MAX_HISTORY=90;
+  const IN_STATS=["bazaarprofit","itemmarketrevenue","totalbountyreward","receivedbountyvalue","stockpayouts","investedprofit"];
+  const OUT_STATS=["itemmarketfees","stockfees","rehabcost","totalbountyspent","peopleboughtspent"];
+  const COMPONENTS=[
+    ["wallet","💵 Wallet"],["vault","🔐 Vault"],["cayman","🌴 Offshore"],["points","⭐ Points"],
+    ["items","🎒 Items"],["displaycase","🖼️ Display case"],["bazaar","🏪 Bazaar"],["itemmarket","🛒 Item market"],
+    ["properties","🏠 Properties"],["stockmarket","📈 Stocks"],["auctionhouse","🔨 Auction house"],["company","🏢 Company"],
+    ["bookie","🎰 Bookie"],["piggybank","🐷 Piggy bank"],["pending","🤝 Pending trades"],["enlistedcars","🏎️ Enlisted cars"],
+    ["trade","🔄 Trades"],["loan","💳 Loan"],["unpaidfees","🧾 Unpaid fees"]
+  ];
+
+  if(location.pathname.toLowerCase()!=="/profiles.php") return;
+  if(document.getElementById(ROOT)) return;
+
+  const css=document.createElement("style");
+  css.textContent=`
+    #${ROOT}{margin:8px 0 10px;width:100%;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;position:relative;z-index:9999}
+    #${ROOT} .nwt-head{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(#3b3b3b,#292929);border-radius:5px;padding:11px 13px;color:#fff;font-weight:700;font-size:15px;cursor:pointer;box-sizing:border-box}
+    #${ROOT} .nwt-head:active{filter:brightness(1.15)}
+    #${ROOT} .nwt-arrow{font-size:13px;opacity:.8;margin-left:8px}
+    #${ROOT} .nwt-body{display:none;margin-top:5px;background:#242424;border-radius:5px;padding:10px;box-sizing:border-box;color:#eee}
+    #${ROOT}.open .nwt-body{display:block}
+    #${ROOT} .nwt-card{background:linear-gradient(#303030,#252525);border:1px solid #414141;border-radius:6px;padding:11px;margin-bottom:8px;box-sizing:border-box}
+    #${ROOT} .nwt-label{font-size:11px;letter-spacing:1px;color:#aaa;text-transform:uppercase}
+    #${ROOT} .nwt-big{font-size:25px;font-weight:800;margin-top:4px;color:#fff}
+    #${ROOT} .nwt-row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px}
+    #${ROOT} .nwt-row strong{font-weight:800}
+    #${ROOT} .in{color:#71d27a}.out{color:#ef7777}.muted{color:#999}
+    #${ROOT} .nwt-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    #${ROOT} .nwt-mini{background:#303030;border-radius:5px;padding:8px}
+    #${ROOT} .nwt-mini .v{font-weight:800;font-size:14px;margin-top:3px}
+    #${ROOT} details{background:#2d2d2d;border-radius:5px;margin-top:8px;padding:0 9px}
+    #${ROOT} summary{cursor:pointer;padding:10px 0;font-weight:700;color:#ddd}
+    #${ROOT} .nwt-components .nwt-row{border-top:1px solid #3a3a3a}
+    #${ROOT} .nwt-foot{font-size:10px;color:#888;margin-top:7px;line-height:1.35}
+    #${ROOT} button{border:0;border-radius:4px;background:#444;color:#fff;padding:7px 9px;font-weight:700}
+    #${ROOT} .nwt-actions{display:flex;gap:7px;margin-top:8px}
+  `;
+  document.head.appendChild(css);
+
+  const root=document.createElement("section");
+  root.id=ROOT;
+  root.innerHTML=`
+    <div class="nwt-head"><span>💰 NetWorth Tracker</span><span class="nwt-arrow">▸</span></div>
+    <div class="nwt-body">
+      <div class="nwt-card">
+        <div class="nwt-label">Current net worth</div>
+        <div class="nwt-big" data-total>Loading…</div>
+        <div class="muted" data-checked>Checking Torn…</div>
+      </div>
+      <div class="nwt-card">
+        <div class="nwt-label">Live cash</div>
+        <div class="nwt-big" data-wallet>Loading…</div>
+        <div class="muted">Cash on hand — bank intentionally omitted</div>
+      </div>
+      <div class="nwt-card">
+        <div class="nwt-label">Today</div>
+        <div class="nwt-row"><span>Net worth change</span><strong data-nwchange>—</strong></div>
+        <div class="nwt-row"><span>Tracked money in</span><strong class="in" data-moneyin>—</strong></div>
+        <div class="nwt-row"><span>Tracked money out</span><strong class="out" data-moneyout>—</strong></div>
+        <div class="nwt-row"><span>Tracked net movement</span><strong data-netmovement>—</strong></div>
+        <div class="nwt-foot">Money in/out is calculated from Torn personal-stat counters. It is not a complete transaction ledger.</div>
+      </div>
+      <details><summary>📊 Net-worth components</summary><div class="nwt-components" data-components></div></details>
+      <details><summary>📚 Local history</summary><div data-history class="muted" style="padding-bottom:9px">No snapshots yet.</div></details>
+      <div class="nwt-actions"><button data-refresh>↻ Refresh</button><button data-clear>Clear local history</button></div>
+      <div class="nwt-foot">Snapshots are stored locally on this device only. Torn API data is read-only.</div>
+    </div>`;
+
+  const target=document.querySelector("#profileroot")||document.querySelector(".profile-wrap")||document.querySelector(".profile-wrap-inner")||document.querySelector(".content-wrapper")||document.body;
+  target.prepend(root);
+
+  const head=root.querySelector(".nwt-head");
+  head.addEventListener("click",()=>{root.classList.toggle("open");root.querySelector(".nwt-arrow").textContent=root.classList.contains("open")?"▾":"▸";});
+
+  const money=n=>Number.isFinite(Number(n))?Number(n):0;
+  const fmt=n=>"$"+Math.round(money(n)).toLocaleString("en-GB");
+  const signed=n=>{const x=money(n);return (x>=0?"+":"-")+fmt(Math.abs(x));};
+  const esc=s=>String(s).replace(/[&<>\"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+
+  function getKey(){
+    const stored=localStorage.getItem(API_KEY_STORE);
+    if(stored) return stored.trim();
+    return KEY&&KEY!=="###PDA-APIKEY###"?KEY.trim():"###PDA-APIKEY###";
+  }
+
+  async function api(selection,extra=""){
+    const key=getKey();
+    if(!key||key==="###PDA-APIKEY###") throw new Error("NO_API_KEY");
+    const url=`https://api.torn.com/user/?selections=${encodeURIComponent(selection)}${extra}&key=${encodeURIComponent(key)}`;
+    const r=await fetch(url,{credentials:"omit"});
+    const j=await r.json();
+    if(j.error) throw new Error(`${j.error.code}: ${j.error.error}`);
+    return j;
+  }
+
+  function readHistory(){try{return JSON.parse(localStorage.getItem(HISTORY_STORE)||"[]")}catch{return[]}}
+  function writeHistory(h){localStorage.setItem(HISTORY_STORE,JSON.stringify(h.slice(-MAX_HISTORY)))}
+  function dayKey(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+
+  function setText(sel,text,cls){const e=root.querySelector(sel);e.textContent=text;e.className=e.className.replace(/\bin\b|\bout\b/g,"").trim();if(cls)e.classList.add(cls)}
+
+  function renderComponents(nw){
+    const box=root.querySelector("[data-components]");
+    box.innerHTML=COMPONENTS.map(([k,label])=>`<div class="nwt-row"><span>${label}</span><strong>${fmt(nw[k])}</strong></div>`).join("");
+  }
+
+  function renderHistory(h){
+    const box=root.querySelector("[data-history]");
+    if(!h.length){box.textContent="No snapshots yet.";return;}
+    box.innerHTML=h.slice().reverse().slice(0,14).map((x,i)=>`<div class="nwt-row" style="border-top:1px solid #3a3a3a"><span>${esc(x.date)}${i===0?" • latest":""}</span><strong>${fmt(x.total)}</strong></div>`).join("");
+  }
+
+  async function refresh(){
+    setText("[data-total]","Loading…");setText("[data-wallet]","Loading…");
+    try{
+      const [nwData,psData]=await Promise.all([
+        api("networth"),
+        api("personalstats","&stat="+encodeURIComponent(IN_STATS.concat(OUT_STATS).join(",")))
+      ]);
+      const nw=nwData.networth||{};
+      const ps=psData.personalstats||{};
+      const total=money(nw.total), wallet=money(nw.wallet);
+      const now=Date.now(), date=dayKey();
+      const history=readHistory();
+      const prev=history.length?history[history.length-1]:null;
+      const today=history.filter(x=>x.date===date);
+      const base=today.length?today[0]:null;
+      const previousStats=base?.stats||null;
+      const inTotal=IN_STATS.reduce((a,k)=>a+Math.max(0,money(ps[k])-(previousStats?money(previousStats[k]):money(ps[k]))),0);
+      const outTotal=OUT_STATS.reduce((a,k)=>a+Math.max(0,money(ps[k])-(previousStats?money(previousStats[k]):money(ps[k]))),0);
+      const nwChange=base?total-money(base.total):0;
+      const walletChange=base?wallet-money(base.wallet):0;
+      setText("[data-total]",fmt(total));
+      setText("[data-wallet]",fmt(wallet));
+      setText("[data-checked]",`Torn checked ${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}`);
+      setText("[data-nwchange]",signed(nwChange),nwChange>=0?"in":"out");
+      setText("[data-moneyin]",fmt(inTotal),"in");
+      setText("[data-moneyout]",fmt(outTotal),"out");
+      setText("[data-netmovement]",signed(inTotal-outTotal),(inTotal-outTotal)>=0?"in":"out");
+      renderComponents(nw);
+
+      if(!base){
+        history.push({date,total,wallet,stats:Object.fromEntries([...IN_STATS,...OUT_STATS].map(k=>[k,money(ps[k])])),ts:now});
+      }else{
+        base.total=total;base.wallet=wallet;base.ts=now;
+        if(!base.stats) base.stats=Object.fromEntries([...IN_STATS,...OUT_STATS].map(k=>[k,money(ps[k])]));
+      }
+      writeHistory(history);renderHistory(history);
+      localStorage.setItem("networth_tracker_last_snapshot",JSON.stringify({total,wallet,ts:now}));
+    }catch(err){
+      const msg=err.message==="NO_API_KEY"?"API key not available — open script settings and add your key.":`Error: ${err.message}`;
+      setText("[data-total]","—");setText("[data-wallet]","—");setText("[data-checked]",msg);
+    }
+  }
+
+  root.querySelector("[data-refresh]").addEventListener("click",e=>{e.stopPropagation();refresh()});
+  root.querySelector("[data-clear]").addEventListener("click",e=>{e.stopPropagation();if(confirm("Clear NetWorth Tracker history stored on this device?")){localStorage.removeItem(HISTORY_STORE);renderHistory([]);}});
+
+  renderHistory(readHistory());
+  refresh();
 })();
