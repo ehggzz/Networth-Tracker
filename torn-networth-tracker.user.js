@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.5.1
+// @version      0.5.2
 // @description  Live Torn cash, cached net worth, observed daily cash movement and local history on your own profile only.
-// @author       ehggzz
+// @author      ehggzz
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
@@ -137,7 +137,7 @@
       const nw=nwData.networth||{};
       const wealth=moneyData.money||moneyData||{};
       const total=money(nw.total);
-      const wallet=money(wealth.wallet ?? wealth.cash ?? wealth.money);
+      const wallet=money(wealth.money_onhand ?? wealth.wallet ?? wealth.cash ?? wealth.money);
       const date=dayKey(), now=Date.now();
       const history=readHistory();
       let today=history.find(x=>x.date===date);
