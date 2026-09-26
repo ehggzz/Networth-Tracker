@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.5.0
-// @description  Live Torn net worth, daily movement and local history on your own profile only.
+// @version      0.5.1
+// @description  Live Torn cash, cached net worth, observed daily cash movement and local history on your own profile only.
 // @author       ehggzz
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
@@ -17,10 +17,8 @@
   const ROOT="networth-tracker-root";
   const KEY="###PDA-APIKEY###";
   const API_KEY_STORE="networth_tracker_api_key";
-  const HISTORY_STORE="networth_tracker_history_v3";
+  const HISTORY_STORE="networth_tracker_history_v4";
   const MAX_HISTORY=90;
-  const IN_STATS=["bazaarprofit","itemmarketrevenue","totalbountyreward","receivedbountyvalue","stockpayouts","investedprofit"];
-  const OUT_STATS=["itemmarketfees","stockfees","rehabcost","totalbountyspent","peopleboughtspent"];
   const COMPONENTS=[
     ["wallet","💵 Wallet"],["vault","🔐 Vault"],["cayman","🌴 Offshore"],["points","⭐ Points"],
     ["items","🎒 Items"],["displaycase","🖼️ Display case"],["bazaar","🏪 Bazaar"],["itemmarket","🛒 Item market"],
@@ -46,11 +44,6 @@
     #${ROOT} .nwt-row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px}
     #${ROOT} .nwt-row strong{font-weight:800}
     #${ROOT} .in{color:#71d27a}.out{color:#ef7777}.muted{color:#999}
-    #${ROOT} .nwt-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-    #${ROOT} .nwt-mini{background:#303030;border-radius:5px;padding:8px}
-    #${ROOT} .nwt-mini .v{font-weight:800;font-size:14px;margin-top:3px}
-    #${ROOT} details{background:#2d2d2d;border-radius:5px;margin-top:8px;padding:0 9px}
-    #${ROOT} summary{cursor:pointer;padding:10px 0;font-weight:700;color:#ddd}
     #${ROOT} .nwt-components .nwt-row{border-top:1px solid #3a3a3a}
     #${ROOT} .nwt-foot{font-size:10px;color:#888;margin-top:7px;line-height:1.35}
     #${ROOT} button{border:0;border-radius:4px;background:#444;color:#fff;padding:7px 9px;font-weight:700}
@@ -71,27 +64,34 @@
       <div class="nwt-card">
         <div class="nwt-label">Live cash</div>
         <div class="nwt-big" data-wallet>Loading…</div>
-        <div class="muted">Cash on hand — bank intentionally omitted</div>
+        <div class="muted" data-cashchecked>Checking live wallet…</div>
       </div>
       <div class="nwt-card">
-        <div class="nwt-label">Today</div>
-        <div class="nwt-row"><span>Net worth change</span><strong data-nwchange>—</strong></div>
-        <div class="nwt-row"><span>Tracked money in</span><strong class="in" data-moneyin>—</strong></div>
-        <div class="nwt-row"><span>Tracked money out</span><strong class="out" data-moneyout>—</strong></div>
-        <div class="nwt-row"><span>Tracked net movement</span><strong data-netmovement>—</strong></div>
-        <div class="nwt-foot">Money in/out is calculated from Torn personal-stat counters. It is not a complete transaction ledger.</div>
+        <div class="nwt-label">Today's observed cash movement</div>
+        <div class="nwt-row"><span>Cash received</span><strong class="in" data-cashin>—</strong></div>
+        <div class="nwt-row"><span>Cash spent</span><strong class="out" data-cashout>—</strong></div>
+        <div class="nwt-row"><span>Net cash movement</span><strong data-cashnet>—</strong></div>
+        <div class="nwt-row"><span>Last cash change</span><strong data-lastcash>—</strong></div>
+        <div class="nwt-foot">Movement is calculated from wallet snapshots taken by the tracker. If several transactions happen between checks, only the net wallet change can be observed.</div>
+      </div>
+      <div class="nwt-card">
+        <div class="nwt-label">Net-worth snapshot</div>
+        <div class="nwt-row"><span>Change since first snapshot today</span><strong data-nwchange>—</strong></div>
+        <div class="nwt-foot">Torn's net-worth endpoint is cached, so this figure can lag behind live cash by up to about an hour.</div>
       </div>
       <details><summary>📊 Net-worth components</summary><div class="nwt-components" data-components></div></details>
       <details><summary>📚 Local history</summary><div data-history class="muted" style="padding-bottom:9px">No snapshots yet.</div></details>
       <div class="nwt-actions"><button data-refresh>↻ Refresh</button><button data-clear>Clear local history</button></div>
-      <div class="nwt-foot">Snapshots are stored locally on this device only. Torn API data is read-only.</div>
+      <div class="nwt-foot">Bank is intentionally excluded from the live panel. Snapshots are stored locally on this device only.</div>
     </div>`;
 
   const target=document.querySelector("#profileroot")||document.querySelector(".profile-wrap")||document.querySelector(".profile-wrap-inner")||document.querySelector(".content-wrapper")||document.body;
   target.prepend(root);
 
-  const head=root.querySelector(".nwt-head");
-  head.addEventListener("click",()=>{root.classList.toggle("open");root.querySelector(".nwt-arrow").textContent=root.classList.contains("open")?"▾":"▸";});
+  root.querySelector(".nwt-head").addEventListener("click",()=>{
+    root.classList.toggle("open");
+    root.querySelector(".nwt-arrow").textContent=root.classList.contains("open")?"▾":"▸";
+  });
 
   const money=n=>Number.isFinite(Number(n))?Number(n):0;
   const fmt=n=>"$"+Math.round(money(n)).toLocaleString("en-GB");
@@ -108,7 +108,7 @@
     const key=getKey();
     if(!key||key==="###PDA-APIKEY###") throw new Error("NO_API_KEY");
     const url=`https://api.torn.com/user/?selections=${encodeURIComponent(selection)}${extra}&key=${encodeURIComponent(key)}`;
-    const r=await fetch(url,{credentials:"omit"});
+    const r=await fetch(url,{credentials:"omit",cache:"no-store"});
     const j=await r.json();
     if(j.error) throw new Error(`${j.error.code}: ${j.error.error}`);
     return j;
@@ -117,12 +117,10 @@
   function readHistory(){try{return JSON.parse(localStorage.getItem(HISTORY_STORE)||"[]")}catch{return[]}}
   function writeHistory(h){localStorage.setItem(HISTORY_STORE,JSON.stringify(h.slice(-MAX_HISTORY)))}
   function dayKey(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
-
-  function setText(sel,text,cls){const e=root.querySelector(sel);e.textContent=text;e.className=e.className.replace(/\bin\b|\bout\b/g,"").trim();if(cls)e.classList.add(cls)}
+  function setText(sel,text,cls){const e=root.querySelector(sel);e.textContent=text;if(cls)e.className=e.className.replace(/\bin\b|\bout\b/g,"").trim()+" "+cls}
 
   function renderComponents(nw){
-    const box=root.querySelector("[data-components]");
-    box.innerHTML=COMPONENTS.map(([k,label])=>`<div class="nwt-row"><span>${label}</span><strong>${fmt(nw[k])}</strong></div>`).join("");
+    root.querySelector("[data-components]").innerHTML=COMPONENTS.map(([k,label])=>`<div class="nwt-row"><span>${label}</span><strong>${fmt(nw[k])}</strong></div>`).join("");
   }
 
   function renderHistory(h){
@@ -132,50 +130,71 @@
   }
 
   async function refresh(){
-    setText("[data-total]","Loading…");setText("[data-wallet]","Loading…");
+    setText("[data-total]","Loading…");
+    setText("[data-wallet]","Loading…");
     try{
-      const [nwData,psData]=await Promise.all([
-        api("networth"),
-        api("personalstats","&stat="+encodeURIComponent(IN_STATS.concat(OUT_STATS).join(",")))
-      ]);
+      const [nwData,moneyData]=await Promise.all([api("networth"),api("money")]);
       const nw=nwData.networth||{};
-      const ps=psData.personalstats||{};
-      const total=money(nw.total), wallet=money(nw.wallet);
-      const now=Date.now(), date=dayKey();
+      const wealth=moneyData.money||moneyData||{};
+      const total=money(nw.total);
+      const wallet=money(wealth.wallet ?? wealth.cash ?? wealth.money);
+      const date=dayKey(), now=Date.now();
       const history=readHistory();
-      const prev=history.length?history[history.length-1]:null;
-      const today=history.filter(x=>x.date===date);
-      const base=today.length?today[0]:null;
-      const previousStats=base?.stats||null;
-      const inTotal=IN_STATS.reduce((a,k)=>a+Math.max(0,money(ps[k])-(previousStats?money(previousStats[k]):money(ps[k]))),0);
-      const outTotal=OUT_STATS.reduce((a,k)=>a+Math.max(0,money(ps[k])-(previousStats?money(previousStats[k]):money(ps[k]))),0);
-      const nwChange=base?total-money(base.total):0;
-      const walletChange=base?wallet-money(base.wallet):0;
-      setText("[data-total]",fmt(total));
-      setText("[data-wallet]",fmt(wallet));
-      setText("[data-checked]",`Torn checked ${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}`);
-      setText("[data-nwchange]",signed(nwChange),nwChange>=0?"in":"out");
-      setText("[data-moneyin]",fmt(inTotal),"in");
-      setText("[data-moneyout]",fmt(outTotal),"out");
-      setText("[data-netmovement]",signed(inTotal-outTotal),(inTotal-outTotal)>=0?"in":"out");
+      let today=history.find(x=>x.date===date);
+      const previousWallet=today?.lastWallet;
+      let cashIn=today?.cashIn||0;
+      let cashOut=today?.cashOut||0;
+      let lastChange=today?.lastChange||0;
+
+      if(!today){
+        today={date,total,wallet,firstTotal:total,firstWallet:wallet,lastWallet:wallet,cashIn:0,cashOut:0,lastChange:0,ts:now};
+        history.push(today);
+      }else if(Number.isFinite(previousWallet)){
+        const delta=wallet-previousWallet;
+        if(delta>0) cashIn+=delta;
+        if(delta<0) cashOut+=Math.abs(delta);
+        if(delta!==0) lastChange=delta;
+        today.total=total;
+        today.lastWallet=wallet;
+        today.cashIn=cashIn;
+        today.cashOut=cashOut;
+        today.lastChange=lastChange;
+        today.ts=now;
+      }else{
+        today.lastWallet=wallet;
+        today.total=total;
+      }
+
+      writeHistory(history);
+      renderHistory(history);
       renderComponents(nw);
 
-      if(!base){
-        history.push({date,total,wallet,stats:Object.fromEntries([...IN_STATS,...OUT_STATS].map(k=>[k,money(ps[k])])),ts:now});
-      }else{
-        base.total=total;base.wallet=wallet;base.ts=now;
-        if(!base.stats) base.stats=Object.fromEntries([...IN_STATS,...OUT_STATS].map(k=>[k,money(ps[k])]));
-      }
-      writeHistory(history);renderHistory(history);
-      localStorage.setItem("networth_tracker_last_snapshot",JSON.stringify({total,wallet,ts:now}));
+      const nwChange=total-money(today.firstTotal);
+      setText("[data-total]",fmt(total));
+      setText("[data-wallet]",fmt(wallet));
+      setText("[data-checked]",`Torn net worth checked ${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}`);
+      setText("[data-cashchecked]",`Live wallet checked ${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}`);
+      setText("[data-cashin]",fmt(today.cashIn),"in");
+      setText("[data-cashout]",fmt(today.cashOut),"out");
+      setText("[data-cashnet]",signed(today.cashIn-today.cashOut),(today.cashIn-today.cashOut)>=0?"in":"out");
+      setText("[data-lastcash]",lastChange?signed(lastChange):"No change observed yet",lastChange>0?"in":lastChange<0?"out":"");
+      setText("[data-nwchange]",signed(nwChange),nwChange>=0?"in":"out");
     }catch(err){
       const msg=err.message==="NO_API_KEY"?"API key not available — open script settings and add your key.":`Error: ${err.message}`;
-      setText("[data-total]","—");setText("[data-wallet]","—");setText("[data-checked]",msg);
+      setText("[data-total]","—");
+      setText("[data-wallet]","—");
+      setText("[data-checked]",msg);
     }
   }
 
   root.querySelector("[data-refresh]").addEventListener("click",e=>{e.stopPropagation();refresh()});
-  root.querySelector("[data-clear]").addEventListener("click",e=>{e.stopPropagation();if(confirm("Clear NetWorth Tracker history stored on this device?")){localStorage.removeItem(HISTORY_STORE);renderHistory([]);}});
+  root.querySelector("[data-clear]").addEventListener("click",e=>{
+    e.stopPropagation();
+    if(confirm("Clear NetWorth Tracker history stored on this device?")){
+      localStorage.removeItem(HISTORY_STORE);
+      renderHistory([]);
+    }
+  });
 
   renderHistory(readHistory());
   refresh();
