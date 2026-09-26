@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn NetWorth Tracker
 // @namespace    https://github.com/ehggzz/Networth-Tracker
-// @version      0.4.7
-// @description  Track Torn net worth, live cash, daily money in/out and local history on your own profile only.
+// @version      0.4.8
+// @description  Torn NetWorth Tracker diagnostic build
 // @author       ehggzz
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/ehggzz/Networth-Tracker/main/torn-networth-tracker.user.js
@@ -11,39 +11,16 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(async()=>{
+(()=>{
 "use strict";
-const ROOT="networth-tracker-root",STYLE=ROOT+"-style",STORE="networth_tracker_data_v2",KEY_STORE="networth_tracker_api_key",ID_STORE="networth_tracker_player_id",NAME_STORE="networth_tracker_player_name",PDA_KEY="###PDA-APIKEY###",KEEP=90*86400000;
-const IN_STATS=["bazaarprofit","itemmarketrevenue","totalbountyreward","receivedbountyvalue","stockprofits","stocknetprofits","investedprofit"],OUT_STATS=["itemmarketfees","stockfees","rehabcost","totalbountyspent","peopleboughtspent"],ALL_STATS=[...new Set([...IN_STATS,...OUT_STATS])];
-let key="",pid=null,pname=null,busy=false;
-const num=v=>Number.isFinite(Number(v))?Number(v):null;
-const money=v=>num(v)===null?"—":`$${Math.round(v).toLocaleString("en-GB")}`;
-const signed=v=>num(v)===null?"—":`${v>0?"+":v<0?"−":""}$${Math.abs(Math.round(v)).toLocaleString("en-GB")}`;
-const esc=v=>String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
-const today=()=>{const d=new Date();d.setHours(0,0,0,0);return d.getTime()};
-async function get(k,f=""){try{if(typeof PDA_storage!=="undefined")return await PDA_storage.get(k,f)}catch(e){}try{const x=localStorage.getItem(k);return x===null?f:JSON.parse(x)}catch(e){return f}}
-async function set(k,v){try{if(typeof PDA_storage!=="undefined"){await PDA_storage.set(k,v);return}}catch(e){}try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
-async function data(){const d=await get(STORE,{});return{current:null,snapshots:[],statsCurrent:{},statsSnapshots:[],apiStatus:"Not checked",apiError:null,lastChecked:null,...(d&&typeof d==="object"?d:{})}}
-async function save(d){d.snapshots=(d.snapshots||[]).filter(x=>Date.now()-x.timestamp<=KEEP);d.statsSnapshots=(d.statsSnapshots||[]).filter(x=>Date.now()-x.timestamp<=KEEP);await set(STORE,d)}
-async function init(){key=PDA_KEY;if(key===PDA_KEY)key=String(await get(KEY_STORE,"")||"").trim();if(!key&&typeof PDA_storage!=="undefined")try{key=String((await PDA_storage.get("torn_api_key",""))||"").trim()}catch(e){}}
-async function req(url){try{if(!key)return{error:{code:"LOCAL",error:"No API key"}};const h={Accept:"application/json",Authorization:`ApiKey ${key}`},r=typeof PDA_httpGet==="function"?PDA_httpGet(url,h):fetch(url,{headers:h}),o=await Promise.race([r,new Promise((_,j)=>setTimeout(()=>j(new Error("Request timed out")),15000))]),t=o?.responseText??o;return typeof t==="string"?JSON.parse(t):await o.json()}catch(e){return{error:{code:"LOCAL",error:e?.message||"Request failed"}}}}
-function api(path,params={}){const u=new URL(`https://api.torn.com/v2/user/${path}`);Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,v));u.searchParams.set("key",key);return req(u.toString())}
-async function identify(){if(!key)return false;pid=Number(await get(ID_STORE,""))||null;pname=String(await get(NAME_STORE,"")||"").trim()||null;if(pid&&pname)return true;const r=await api("basic");if(r?.error)return false;const b=r.basic||r,id=Number(b.player_id??b.id??r.player_id??r.userID),n=String(b.name??r.name??"").trim();if(id>0){pid=id;await set(ID_STORE,id)}if(n){pname=n;await set(NAME_STORE,n)}return!!pid}
-function own(){if(location.pathname.toLowerCase()!=="/profiles.php")return false;const p=new URLSearchParams(location.search),x=Number(p.get("XID")||p.get("ID"));if(x>0)return!!pid&&x===pid;const n=String(p.get("NID")||"").trim();if(n)return!!pname&&decodeURIComponent(n).toLowerCase()===pname.toLowerCase();return!p.has("XID")&&!p.has("ID")&&!p.has("NID")}
-function exact(t){return[...document.querySelectorAll("h1,h2,h3,h4,h5,h6,div,span,strong,p")].find(e=>e.isConnected&&e.textContent.trim()===t&&getComputedStyle(e).display!=="none")||null}
-function insertion(){
- const medals=exact("Medals"),basic=exact("Basic Information");
- if(medals&&basic){let m=[],n=medals;while(n){m.push(n);n=n.parentElement}const b=new Set();n=basic;while(n){b.add(n);n=n.parentElement}let lca=null;for(const x of m){if(b.has(x)){lca=x;break}}if(lca){let path=[],q=medals;while(q&&q!==lca){path.push(q);q=q.parentElement}path.push(lca);const child=path[path.length-2];if(child?.parentElement===lca)return{parent:lca,before:child}}}
- for(const t of ["FFScouter Settings","Loadout Information"]){const e=exact(t);if(!e)continue;let n=e;for(let i=0;i<7&&n.parentElement;i++,n=n.parentElement){const p=n.parentElement;if(p.children.length>=2)return{parent:p,after:n}}}return null;
-}
-function style(){if(document.getElementById(STYLE))return;const s=document.createElement("style");s.id=STYLE;s.textContent=`#${ROOT}{margin:8px 0;font-family:Arial,Helvetica,sans-serif;color:#ddd}#${ROOT} .head{display:block;width:100%;box-sizing:border-box;border:0;border-radius:4px;padding:10px 12px;background:linear-gradient(#3a3a3a,#292929);color:#eee;text-align:left;font-size:14px;font-weight:700;cursor:pointer}#${ROOT} .arrow{float:right;opacity:.7}#${ROOT} .panel{display:none;margin-top:2px;padding:12px;border-radius:0 0 4px 4px;background:#202020;font-size:12px;line-height:1.45}#${ROOT}.open .panel{display:block}#${ROOT} .big{text-align:center;font-size:21px;font-weight:700;color:#fff}#${ROOT} .muted{opacity:.65;font-size:11px}#${ROOT} .card{margin-top:10px;border-top:1px solid #3a3a3a;padding-top:9px}#${ROOT} .row{display:flex;justify-content:space-between;gap:8px;padding:4px 0}#${ROOT} .row+.row{border-top:1px solid #2d2d2d}#${ROOT} .pos{color:#72df91}#${ROOT} .neg{color:#ff7777}#${ROOT} details{margin-top:10px;border-top:1px solid #3a3a3a;padding-top:9px}#${ROOT} summary{cursor:pointer;font-weight:600}`;document.head.appendChild(s)}
-function root(){let r=document.getElementById(ROOT);if(r)return r;const t=insertion();if(!t)return null;r=document.createElement("section");r.id=ROOT;if(t.before)t.parent.insertBefore(r,t.before);else if(t.after)t.after.insertAdjacentElement("afterend",r);else t.parent.prepend(r);return r}
-function statsDelta(d){const base=(d.statsSnapshots||[]).find(x=>x.timestamp>=today()),cur=d.statsCurrent||{},o={};if(base)for(const k of ALL_STATS){const a=num(cur[k]),b=num(base.stats?.[k]);if(a!==null&&b!==null)o[k]=a-b}return o}
-function sum(d,a){const x=statsDelta(d);return a.reduce((s,k)=>s+(num(x[k])||0),0)}
-function components(n){const o={};const add=(k,v)=>{const x=num(v);if(x!==null)o[k]=x};add("Wallet",n?.money?.wallet??n?.wallet);add("Cayman",n?.money?.cayman??n?.cayman);add("Vault",n?.money?.vault??n?.vault);add("Points",n?.points);add("Items",n?.items?.inventory??n?.items);add("Bazaar",n?.items?.bazaar??n?.bazaar);add("Item market",n?.items?.item_market??n?.itemmarket);add("Properties",n?.assets?.property??n?.properties);add("Stocks",n?.stockmarket??n?.stocks);add("Company",n?.assets?.company??n?.company);return o}
-function total(n){for(const v of[n?.total,n?.networth]){const x=num(v);if(x!==null)return x}return null}
-function render(d){const r=document.getElementById(ROOT);if(!r)return;const c=d.current||{},old=(d.snapshots||[]).filter(x=>x.timestamp<today()).slice(-1)[0],nw=old&&num(c.networth)!==null?c.networth-old.networth:null,inc=sum(d,IN_STATS),out=sum(d,OUT_STATS),flow=inc-out,rows=Object.entries(c.components||{}).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><b>${money(v)}</b></div>`).join("");r.innerHTML=`<button class="head" type="button">💰 NetWorth Tracker <span class="arrow">${r.classList.contains("open")?"▾":"▸"}</span></button><div class="panel"><div class="big">${money(c.networth)}</div><div class="muted" style="text-align:center">Current net worth · checked ${c.timestamp?new Date(c.timestamp).toLocaleTimeString("en-GB"):"never"}</div><div class="card"><div class="row"><span>Live cash</span><b>${money(c.cash)}</b></div><div class="row"><span>Today's NW change</span><b class="${nw>0?"pos":nw<0?"neg":""}">${signed(nw)}</b></div><div class="row"><span>Today's money in</span><b class="pos">${signed(inc)}</b></div><div class="row"><span>Today's money out</span><b class="neg">${signed(-out)}</b></div><div class="row"><span>Net tracked flow</span><b class="${flow>0?"pos":flow<0?"neg":""}">${signed(flow)}</b></div></div><details><summary>📊 Net-worth components</summary>${rows||'<div class="muted">No component data returned yet.</div>'}</details><details><summary>⚙️ API / setup</summary><div class="muted">Status: ${esc(d.apiStatus)} · Last check: ${d.lastChecked?new Date(d.lastChecked).toLocaleString("en-GB"):"never"}</div>${d.apiError?`<div class="neg">${esc(d.apiError)}</div>`:""}</details></div>`;r.querySelector(".head").onclick=()=>{r.classList.toggle("open");r.querySelector(".arrow").textContent=r.classList.contains("open")?"▾":"▸"}}
-async function refresh(){if(busy||!key||!own())return;busy=true;try{const[m,n,p]=await Promise.all([api("money"),api("networth"),api("personalstats",{stat:ALL_STATS.join(",")})]);if(m?.error)throw Error(`${m.error.code}: ${m.error.error}`);if(n?.error)throw Error(`${n.error.code}: ${n.error.error}`);if(p?.error)throw Error(`${p.error.code}: ${p.error.error}`);const d=await data(),mm=m.money||{},nn=n.networth||{},snap={timestamp:Date.now(),cash:num(mm.wallet),networth:total(nn),components:components(nn)};d.current=snap;d.snapshots.push(snap);d.statsCurrent=p.personalstats||{};d.statsSnapshots.push({timestamp:Date.now(),stats:d.statsCurrent});d.apiStatus="OK";d.apiError=null;d.lastChecked=Date.now();await save(d);render(d)}catch(e){const d=await data();d.apiStatus="Error";d.apiError=e?.message||"Request failed";d.lastChecked=Date.now();await save(d);render(d)}finally{busy=false}}
-async function page(){if(location.pathname.toLowerCase()!=="/profiles.php"){document.getElementById(ROOT)?.remove();return}await identify();if(!own()){document.getElementById(ROOT)?.remove();return}style();let tries=0;const go=async()=>{if(!own())return;const r=root();if(r){render(await data());refresh();return}if(++tries<30)setTimeout(go,500)};go()}
-await init();page();setInterval(page,10000);
+const ID="networth-tracker-diagnostic";
+if(document.getElementById(ID)||location.pathname.toLowerCase()!=="/profiles.php")return;
+const s=document.createElement("style");
+s.textContent=`#${ID}{margin:8px 0;padding:10px 12px;background:linear-gradient(#3a3a3a,#292929);border-radius:4px;color:#fff;font:700 14px Arial,Helvetica,sans-serif;box-sizing:border-box;width:100%;position:relative;z-index:9999}`;
+document.head.appendChild(s);
+const bar=document.createElement("div");
+bar.id=ID;
+bar.textContent="💰 NetWorth Tracker — DIAGNOSTIC RUNNING";
+const target=document.querySelector("#profileroot")||document.querySelector(".profile-wrap")||document.querySelector(".profile-wrap-inner")||document.querySelector(".content-wrapper")||document.body;
+target.prepend(bar);
 })();
