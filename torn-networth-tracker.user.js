@@ -37,7 +37,7 @@
     async function api(selection){const key=getKey();if(!key)throw new Error("NO_API_KEY");const r=await fetch(`https://api.torn.com/user/?selections=${encodeURIComponent(selection)}&key=${encodeURIComponent(key)}`,{credentials:"omit",cache:"no-store"});const j=await r.json();if(j.error)throw new Error(`${j.error.code}: ${j.error.error}`);return j}
     const readHistory=()=>{try{return JSON.parse(localStorage.getItem(HISTORY_STORE)||"[]")}catch{return[]}};
     const writeHistory=h=>localStorage.setItem(HISTORY_STORE,JSON.stringify(h.slice(-MAX_HISTORY)));
-    const dayKey=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0`)}`};
+    const dayKey=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
     const renderComponents=nw=>root.querySelector("[data-components]").innerHTML=COMPONENTS.map(([k,l])=>`<div class="nwt-row"><span>${l}</span><strong>${fmt(nw[k])}</strong></div>`).join("");
     const renderHistory=h=>{const b=root.querySelector("[data-history]");if(!h.length){b.textContent="No snapshots yet.";return}b.innerHTML=h.slice().reverse().slice(0,14).map((x,i)=>`<div class="nwt-row" style="border-top:1px solid #3a3a3a"><span>${esc(x.date)}${i===0?" • latest":""}</span><strong>${fmt(x.total)}</strong></div>`).join("")};
     let chartRange=5;
